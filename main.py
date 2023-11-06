@@ -62,6 +62,8 @@ class CANN(nn.Module):
         self.cell_update_chance = cell_update_chance
         self.seq = nn.Sequential(
             nn.Conv2d(48, 128, kernel_size=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.Dropout(.25),
             nn.ReLU(),
             nn.Conv2d(128, n_channels, kernel_size=1, bias=False),
         )
@@ -85,7 +87,7 @@ class CANN(nn.Module):
         sobel_x = sobel_x.repeat(self.n_channels, 1, 1, 1)
         sobel_y = sobel_y.repeat(self.n_channels, 1, 1, 1)
 
-        stacked_kernels = torch.cat((identity, sobel_x, sobel_y))
+        stacked_kernels = torch.cat((sobel_x, sobel_y, identity))
 
         perceived = F.conv2d(X, stacked_kernels, padding=1, groups=self.n_channels)
 
@@ -125,10 +127,11 @@ class CANN(nn.Module):
         )  # stochastic update
         X += dx * stochastic_update_mask
 
+        X[1, :, 20, 20] = torch.tensor([1, 2, 3, 0, 5, 1, 1, 3 ,3 ,3 ,3 ,3 ,3 ,3 ,3 ,3 ], dtype=torch.float32)
         post_mask = self.live_cell_mask(X)
         live_mask = pre_mask & post_mask
         assert live_mask[:, 0, :, :].sum().item() != 0, "ERROR: No live cells"
-        X = X * live_mask.float()
+        X = X * live_mask[:, 0:1, :, :].float()
         return X.permute(0, 2, 3, 1)
 
 
@@ -233,6 +236,7 @@ def train_loop(model, optimizer, loss_fn, data_loader, epochs=1000):
                 save_img(X, name=f'train/{epoch}_CA_Image')
 
 
+# FIXME: not saving images or.. model not working
 def test_loop(data, model, loss_fn, epochs=1000):
     test_loss = 0
     lowest_loss = 1
@@ -270,18 +274,18 @@ def save_img(X, name="CA_Image"):
     img.save(f"data/{name}.png")
 
 def main():
-    # emoji = load_emoji("🤑")
-    emoji = load_emoji("🥰")
+    emoji = load_emoji("🤑")
+    # emoji = load_emoji("🥰")
     # emoji = load_image("res/money_mouth_face.png")
 
     model = CANN().to(device)
-    loss_fn = nn.MSELoss(reduction='mean')  # prob need to fix loss
-    learning_rate = 0.001
+    loss_fn = nn.MSELoss()  # prob need to fix loss
+    learning_rate = 0.002
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    dataset = CellularAutomataDataset(emoji, num_items=10240)
-    dataloader = DataLoader(dataset, batch_size=512)
-    train_loop(model, optimizer, loss_fn, dataloader, epochs=10_000)
+    dataset = CellularAutomataDataset(emoji, num_items=1000)
+    dataloader = DataLoader(dataset, batch_size=10)
+    train_loop(model, optimizer, loss_fn, dataloader, epochs=1000)
 
     test_loop(dataloader, model, loss_fn)
 
@@ -292,3 +296,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# BEST
+# num_items=1000
+# batch_size=10
+# epochs=1000
+# learning_rate=0.002
+# model code
+#    nn.Conv2d(48, 128, kernel_size=1, bias=False),
+#    nn.BatchNorm2d(128),
+#    nn.Dropout(.25),
+#    nn.ReLU(),
+#    nn.Conv2d(128, n_channels, kernel_size=1, bias=False),
+# Final Loss:  0.06307224184274673
