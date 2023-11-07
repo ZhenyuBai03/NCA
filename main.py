@@ -127,7 +127,6 @@ class CANN(nn.Module):
         )  # stochastic update
         X += dx * stochastic_update_mask
 
-        X[1, :, 20, 20] = torch.tensor([1, 2, 3, 0, 5, 1, 1, 3 ,3 ,3 ,3 ,3 ,3 ,3 ,3 ,3 ], dtype=torch.float32)
         post_mask = self.live_cell_mask(X)
         live_mask = pre_mask & post_mask
         assert live_mask[:, 0, :, :].sum().item() != 0, "ERROR: No live cells"
