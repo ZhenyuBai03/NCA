@@ -8,10 +8,12 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from PIL import Image
 
-device = "cpu"
-device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+def get_device():
+    global device
+    device = "cpu"
+    device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
 # device = torch.device("cuda") if torch.cuda.is_available() else device
-print(f"Using device: {device}")
+    print(f"Using device: {device}")
 
 
 class CellularAutomataDataset(Dataset):
@@ -166,7 +168,7 @@ def load_image(path: str | io.BytesIO, max_size=40) -> torch.Tensor:
     return orig_im
 
 
-def init_grid(grid_size):
+def init_grid(grid_size=40):
     ca = np.zeros(
         (grid_size, grid_size, 16), dtype=np.float32
     )  # image: 160x160 with rgba + 12
@@ -236,37 +238,42 @@ def train_loop(model, optimizer, loss_fn, data_loader, epochs=1000):
 
 
 # FIXME: not saving images or.. model not working
-def test_loop(data, model, loss_fn, epochs=1000):
-    test_loss = 0
-    lowest_loss = 1
+# def test_loop(data, model, loss_fn, epochs=1000):
+def test_loop(model: CANN, loss_fn, data_loader, epochs=1000):
     with torch.no_grad():
-        lowest_loss_loop = lowest_loss
         X = init_grid(40).to(device)
-        batch_size = data.batch_size
+        lowest_loss = 1
+        batch_size = data_loader.batch_size
         X = X.repeat(batch_size, 1, 1, 1)
-
         print("\n\nTesting...")
-        for i in range(epochs):
+        for epoch in range(epochs):
             print(f"\n--------------------------")
-            print(f"Generation {i}")
+            print(f"Epoch {epoch}")
+            lowest_loss_loop = lowest_loss
             sX = X
-            # for _, y in data:
-            for y in data:
+            for  y in data_loader:
                 y = y.to(device)
 
-                y_pred = model(X.clone())
+                y_pred = model(X.clone())  # returns updated grid
+                loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
 
-                loss = loss_fn(y_pred[..., :3], y)
-                test_loss += loss.item()
 
                 if loss < lowest_loss_loop:
                     lowest_loss_loop = loss
-                    sX = y_pred
+                    sX = y_pred.detach()  # save best state_grid
 
+
+            live_cells = (X[..., 3] > 0.1).sum().item()
+            growing_cells = (X[..., 3] > 0).sum().item() - live_cells
+            print(f"Imature cells:     {growing_cells}")
+            print(f"Mature cells:      {live_cells}")
+            print(f"Total live cells:  {growing_cells + live_cells}")
+            print(f"Loss:              {lowest_loss_loop}")
+            print(f"Lowest Loss:       {lowest_loss}")
             if lowest_loss_loop < lowest_loss:
                 lowest_loss = lowest_loss_loop
                 X = sX  # save best state_grid
-                save_img(X, name=f'test/{i}_CA_Image')
+                save_img(X, name=f'test/{epoch}_CA_Image')
 
 def save_img(X, name="CA_Image"):
     img = np_to_image(X[0, :, :, :3].to("cpu").detach().numpy())
@@ -286,7 +293,7 @@ def main():
     dataloader = DataLoader(dataset, batch_size=10)
     train_loop(model, optimizer, loss_fn, dataloader, epochs=1000)
 
-    test_loop(dataloader, model, loss_fn)
+    test_loop(model, loss_fn, dataloader)
 
     # save model
     torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")

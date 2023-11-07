@@ -1,2 +1,3 @@
 .DS_STORE
 *.pt
+__pycache__
