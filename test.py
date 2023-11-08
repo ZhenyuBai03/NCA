@@ -1,7 +1,7 @@
 # import local ca.py model
 import torch
 from torch.utils.data import DataLoader
-import ca
+import main as ca
 
 def main():
     # set device

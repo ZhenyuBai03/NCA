@@ -230,16 +230,16 @@ def train_loop(model, optimizer, loss_fn, data_loader, epochs=1000):
         if lowest_loss_loop < lowest_loss:
             lowest_loss = lowest_loss_loop
             X = sX  # save best state_grid
-            gap = last_saved - lowest_loss
-            if gap > .0001:
-                last_saved = lowest_loss
-                torch.save(X, f"data/train/{epoch}_CA_State.pt")
-                save_img(X, name=f'train/{epoch}_CA_Image')
+            # gap = last_saved - lowest_loss
+            # if gap > .0001:
+            last_saved = lowest_loss
+            torch.save(X, f"data/train_model/{epoch}_CA_State.pt")
+            save_img(X, name=f'train/{epoch}_CA_Image')
 
 
 # FIXME: not saving images or.. model not working
 # def test_loop(data, model, loss_fn, epochs=1000):
-def test_loop(model: CANN, loss_fn, data_loader, epochs=1000):
+def test_loop(model: CANN, data_loader, epochs=1000):
     with torch.no_grad():
         X = init_grid(40).to(device)
         # lowest_loss = 1
@@ -254,9 +254,10 @@ def test_loop(model: CANN, loss_fn, data_loader, epochs=1000):
             for y in data_loader:
                 y = y.to(device)
 
-                y_pred = model(X.clone())  # returns updated grid
+                y_pred = model(X)  # returns updated grid
 
                 X = y_pred
+
                 save_img(X, name=f'test/{epoch}_CA_Image')
             #     loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
             #
@@ -301,7 +302,7 @@ def main():
     torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")
     print("\nSaved model to data/CA_Model.pt\n\n")
 
-    test_loop(model, loss_fn, dataloader)
+    test_loop(model, dataloader)
 
 
 
@@ -320,4 +321,8 @@ if __name__ == "__main__":
 #    nn.Dropout(.25),
 #    nn.ReLU(),
 #    nn.Conv2d(128, n_channels, kernel_size=1, bias=False),
-# Final Loss:  0.06307224184274673
+# Imature cells:     223
+# Mature cells:      14663
+# Total live cells:  14886
+# Loss:              0.029477445408701897
+# Lowest Loss:       0.029483851045370102
