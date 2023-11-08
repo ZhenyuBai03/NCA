@@ -136,8 +136,8 @@ class CANN(nn.Module):
         return X.permute(0, 2, 3, 1)
 
 
-def np_to_image(arr, max_size=40):
-    img = Image.fromarray((arr.reshape(max_size, max_size, 3) * 255).astype(np.uint8))
+def np_to_image(arr):
+    img = Image.fromarray((arr * 255).astype(np.uint8))
     return img
 
 
@@ -242,44 +242,48 @@ def train_loop(model, optimizer, loss_fn, data_loader, epochs=1000):
 def test_loop(model: CANN, loss_fn, data_loader, epochs=1000):
     with torch.no_grad():
         X = init_grid(40).to(device)
-        lowest_loss = 1
+        # lowest_loss = 1
         batch_size = data_loader.batch_size
         X = X.repeat(batch_size, 1, 1, 1)
         print("\n\nTesting...")
         for epoch in range(epochs):
             print(f"\n--------------------------")
             print(f"Epoch {epoch}")
-            lowest_loss_loop = lowest_loss
-            sX = X
-            for  y in data_loader:
+            # lowest_loss_loop = lowest_loss
+            # sX = X
+            for y in data_loader:
                 y = y.to(device)
 
                 y_pred = model(X.clone())  # returns updated grid
-                loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
 
-
-                if loss < lowest_loss_loop:
-                    lowest_loss_loop = loss
-                    sX = y_pred.detach()  # save best state_grid
-
-
-            live_cells = (X[..., 3] > 0.1).sum().item()
-            growing_cells = (X[..., 3] > 0).sum().item() - live_cells
-            print(f"Imature cells:     {growing_cells}")
-            print(f"Mature cells:      {live_cells}")
-            print(f"Total live cells:  {growing_cells + live_cells}")
-            print(f"Loss:              {lowest_loss_loop}")
-            print(f"Lowest Loss:       {lowest_loss}")
-            if lowest_loss_loop < lowest_loss:
-                lowest_loss = lowest_loss_loop
-                X = sX  # save best state_grid
+                X = y_pred
                 save_img(X, name=f'test/{epoch}_CA_Image')
+            #     loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
+            #
+            #
+            #     if loss < lowest_loss_loop:
+            #         lowest_loss_loop = loss
+            #         sX = y_pred.detach()  # save best state_grid
+            #
+            #
+            # live_cells = (X[..., 3] > 0.1).sum().item()
+            # growing_cells = (X[..., 3] > 0).sum().item() - live_cells
+            # print(f"Imature cells:     {growing_cells}")
+            # print(f"Mature cells:      {live_cells}")
+            # print(f"Total live cells:  {growing_cells + live_cells}")
+            # print(f"Loss:              {lowest_loss_loop}")
+            # print(f"Lowest Loss:       {lowest_loss}")
+            # if lowest_loss_loop < lowest_loss:
+            #     lowest_loss = lowest_loss_loop
+            #     X = sX  # save best state_grid
+            #     save_img(X, name=f'test/{epoch}_CA_Image')
 
 def save_img(X, name="CA_Image"):
     img = np_to_image(X[0, :, :, :3].to("cpu").detach().numpy())
     img.save(f"data/{name}.png")
 
 def main():
+    get_device()
     emoji = load_emoji("🤑")
     # emoji = load_emoji("🥰")
     # emoji = load_image("res/money_mouth_face.png")
@@ -293,11 +297,12 @@ def main():
     dataloader = DataLoader(dataset, batch_size=10)
     train_loop(model, optimizer, loss_fn, dataloader, epochs=1000)
 
-    test_loop(model, loss_fn, dataloader)
-
     # save model
     torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")
-    print("Saved model to data/CA_Model.pt")
+    print("\nSaved model to data/CA_Model.pt\n\n")
+
+    test_loop(model, loss_fn, dataloader)
+
 
 
 if __name__ == "__main__":
