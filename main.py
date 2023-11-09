@@ -3,10 +3,13 @@ import requests
 import numpy as np
 import torch
 from torch import nn
+import torch.autograd.anomaly_mode as anomaly_mode
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from PIL import Image
+from torch.utils.tensorboard import SummaryWriter
+import pathlib
 
 def get_device():
     global device
@@ -14,38 +17,6 @@ def get_device():
     device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
 # device = torch.device("cuda") if torch.cuda.is_available() else device
     print(f"Using device: {device}")
-
-
-class CellularAutomataDataset(Dataset):
-    def __init__(self, target_image, num_items=10_000):
-        self.grid_size = target_image.shape[0]
-        self.target_image = target_image
-        self.num_items = num_items
-        # self.grids = np.array([self._init_grid()] * num_items) # TODO: remove
-
-    def __len__(self):
-        return self.num_items
-
-    @staticmethod
-    def _init_center_unit() -> np.ndarray:
-        ca = np.zeros(16)  # rgba + 12
-        ca[3:] = 1  # set to alive
-        return ca
-
-    def _init_grid(self):
-        ca = np.zeros(
-            (self.grid_size, self.grid_size, 16)
-        )  # image: 160x160 with rgba + 12
-        ca[:, :, :3] = 1
-        center = self.grid_size // 2
-        ca[center, center] = self._init_center_unit()
-        return torch.from_numpy(ca)
-
-    def __getitem__(self, idx): # TODO: replace with this
-       return self.target_image
-    # def __getitem__(self, idx):
-    #     return self.grids[idx], self.target_image
-
 
 class CANN(nn.Module):
     """
@@ -58,93 +29,67 @@ class CANN(nn.Module):
         - a == 0 = dead
     """
 
-    def __init__(self, n_channels=16, cell_update_chance=0.5):
+    def __init__(self, n_channels, cell_update_chance):
         super().__init__()
         self.n_channels = n_channels
         self.cell_update_chance = cell_update_chance
+
         self.seq = nn.Sequential(
-            nn.Conv2d(48, 128, kernel_size=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.Dropout(.25),
+            nn.Conv2d(48, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(128, n_channels, kernel_size=1, bias=False),
         )
 
-    def perceived_vector(self, X):  # this can be learned
-        #     # return a vector of the perception of the kernel
-        identity = torch.zeros((1, 1, 3, 3), dtype=torch.float32, device=X.device)
-        identity[:, :, 1, 1] = 1
+        # why do we need this?
+        with torch.no_grad():
+            self.seq[2].weight.zero_()
 
-        sobel_x = (
-            torch.tensor(
-                [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+    def perceived_vector(self, X):
+        # TODO: REVERT THIS TO OLD CODE
+        sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        scalar = 8.0
+
+        sobel_filter_x = sobel_filter_ / scalar
+        sobel_filter_y = sobel_filter_.t() / scalar
+        identity_filter = torch.tensor(
+                [
+                    [0, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 0],
+                ],
                 dtype=torch.float32,
-                device=X.device,
-            ).view(1, 1, 3, 3)
-            / 8.0
         )
-        sobel_y = sobel_x.transpose(2, 3)
+        filters = torch.stack([identity_filter, sobel_filter_x, sobel_filter_y])  # (3, 3, 3)
+        filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
+        stacked_filters = filters[:, None, ...].to(device)
 
-        identity = identity.repeat(self.n_channels, 1, 1, 1)
-        sobel_x = sobel_x.repeat(self.n_channels, 1, 1, 1)
-        sobel_y = sobel_y.repeat(self.n_channels, 1, 1, 1)
-
-        stacked_kernels = torch.cat((sobel_x, sobel_y, identity))
-
-        perceived = F.conv2d(X, stacked_kernels, padding=1, groups=self.n_channels)
+        perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
 
         return perceived
+    
+    def update(self, X):
+        return self.seq()
+    
+    def stochastic_update(self, X, cell_update_chance):
+        mask = (torch.rand(X[:, :1, :, :].shape) <= cell_update_chance).to(device, torch.float32)
+        return X * mask
 
     def live_cell_mask(self, X, alpha_threshold=0.1):
-        # check surrounding 3x3 kernel for live cells
-        # if no live cells, then cell dies
-        alpha_channel = X[:, 3, :, :].unsqueeze(
-            1
-        )  # Shape [batch_size, 1, height, width]
-        live_cells = (
-            alpha_channel > alpha_threshold
-        ).float()  # Get live cells as a binary mask
-        # print((live_cells > alpha_threshold).sum().item())
-
-        # Define a 3x3 kernel to count the live neighbors
-        kernel = torch.ones((1, 1, 3, 3), dtype=torch.float32, device=X.device)
-        # kernel[:, :, 1, 1] = 0  # Ignore the center cell itself
-
-        # Count live neighbors using convolution
-        live_neighbors = F.conv2d(live_cells, kernel, padding=1)
-        # print((live_neighbors > alpha_threshold).sum().item())
-
-        # exit(1)
-        # If a cell has at least one live neighbor, it stays alive/comes to life
-        return live_neighbors >= 1
+        return F.max_pool2d(X[:, 3:4, :, :], kernel_size=3, stride=1, padding=1) > alpha_threshold
 
     def forward(self, X):
-        X = X.permute(0, 3, 1, 2)
+        #X = X.permute(0, 3, 1, 2)
         pre_mask = self.live_cell_mask(X)
+        y = self.perceived_vector(X)
+        dx = self.seq(y)
+        dx = self.stochastic_update(dx, self.cell_update_chance)
 
-        p = self.perceived_vector(X)
-        dx = self.seq(p)
-        stochastic_update_mask = (
-            torch.rand_like(dx) > self.cell_update_chance
-        )  # stochastic update
-        X += dx * stochastic_update_mask
+        X = X + dx
 
         post_mask = self.live_cell_mask(X)
-        live_mask = pre_mask & post_mask
-        assert live_mask[:, 0, :, :].sum().item() != 0, "ERROR: No live cells"
-        X = X * live_mask[:, 0:1, :, :].float()
-        return X.permute(0, 2, 3, 1)
-
-
-def np_to_image(arr):
-    img = Image.fromarray((arr * 255).astype(np.uint8))
-    return img
-
-
-def imshow(t):
-    img = np_to_image(t.detach().numpy())
-    img.format = "JPG"
-    img.show()
+        live_mask = (pre_mask & post_mask).to(torch.float32)
+        # assert live_mask[:, 0, :, :].sum().item() != 0, "ERROR: No live cells"
+        return X * live_mask
 
 def load_emoji(emoji):
     code = hex(ord(emoji))[2:].lower()
@@ -152,158 +97,160 @@ def load_emoji(emoji):
     r = requests.get(url)
     return load_image(io.BytesIO(r.content))
 
-
-def load_image(path: str | io.BytesIO, max_size=40) -> torch.Tensor:
+def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
     orig_im = Image.open(path)
     orig_im.thumbnail((max_size, max_size), resample=Image.BILINEAR)
-    # orig_im = np.asarray(orig_im)
     orig_im = np.float32(orig_im) / 255.0
-    # orig_im = orig_im.reshape(160 * 160, 4)
-    rgb, a = orig_im[..., :3], orig_im[..., 3]
-    a = a[..., None]
-    # multiply each a into rgb
-    rgb = rgb * a  # shouldnt work but does
-    # img = (rgb * a) + (rgb * (1 - a)) # should work but doesn't
-    orig_im = torch.from_numpy(rgb)
+    orig_im[..., :3] *= orig_im[..., 3:]
+    orig_im = torch.from_numpy(orig_im).permute(2, 0, 1)[None, ...]
     return orig_im
 
+def to_rgb(img_rgba):
+    # convert our RGBA image into a rgb image tensor and a alpha value tensor
+    # also make sure that alpha value is between 0 and 1
+    rgb, a = img_rgba[:, :3, ...], torch.clamp(img_rgba[..., 3:], 0, 1)
+    return torch.clamp(1.0 - a + rgb, 0, 1)
 
-def init_grid(grid_size=40):
-    ca = np.zeros(
-        (grid_size, grid_size, 16), dtype=np.float32
-    )  # image: 160x160 with rgba + 12
-    center = grid_size // 2
-    ca[center, center, 3:] = 1
-    return torch.from_numpy(ca).unsqueeze(0)
+def init_grid(size, n_channels):
+    # Creates our initial image with a single black pixel
+    # initializes all channels except the RGB to 1.0
+    X = torch.zeros((1, n_channels, size, size), dtype=torch.float32)
+    X[:, 3:, size // 2, size // 2] = 1
+    return X
 
-
-def train_loop(model, optimizer, loss_fn, data_loader, epochs=1000):
-    # X = initial CA state
-    # y = original image
-    # pred = calculated image from CA
-    X = init_grid(40).to(device)  # FIXME: this is a hack (use image size)
-    lowest_loss = 1
-    last_saved = 1
+def train_loop_old(model, optimizer, loss_fn, data_loader, target, epochs=1000):
     batch_size = data_loader.batch_size
-    X = X.repeat(batch_size, 1, 1, 1)
+    target = target.to(device, torch.float32)
+    target = target.unsqueeze(0)
+    target = target.repeat(batch_size, 1, 1, 1)
     print("\n\nTraining with batch size: ", batch_size)
     for epoch in range(epochs):
         print(f"\n--------------------------")
         print(f"Epoch {epoch}")
-        lowest_loss_loop = lowest_loss
+        # exit()
+        # X = init_grid(data_loader.shape[0]).to(device)  # FIXME: this is a hack (use image size)
+        X = init_grid(40).to(device)  # FIXME: this is a hack (use image size)
+        X = X.repeat(batch_size, 1, 1, 1)
         sX = X
-        # if lowest_loss != 1:
-        #     print(X.shape)
-        #     print(sX.shape)
-        #     print(sX[:, 79:82, 79:82, 3])
-        #     exit(1)
-        # kernels = get_kernels(ca) # probably want to replace this with a perception vector like in the paper
-        # for batch_idx, (_, y) in enumerate(data_loader):
-        for batch_idx, y in enumerate(data_loader):
-            # X = state_grid
+        for y in data_loader:
             y = y.to(device)
+            y_pred = model(sX)  # returns updated grid
 
-            y_pred = model(X.clone())  # returns updated grid
+            sX = y_pred.detach()
 
-            loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
+        loss = loss_fn(X[..., :3], target) # only use rgb for loss
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            if loss < lowest_loss_loop:
-                lowest_loss_loop = loss
-                sX = y_pred.detach()  # save best state_grid
-
-            # if (batch_idx * batch_size) % 100 == 0:
-            #     print(
-            #         f"\tBatch {batch_idx * batch_size:4} Lowest {lowest_loss_loop:.8f}, Loss {loss}"
-            #     )
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
         live_cells = (X[..., 3] > 0.1).sum().item()
         growing_cells = (X[..., 3] > 0).sum().item() - live_cells
         print(f"Imature cells:     {growing_cells}")
         print(f"Mature cells:      {live_cells}")
         print(f"Total live cells:  {growing_cells + live_cells}")
-        print(f"Loss:              {lowest_loss_loop}")
-        print(f"Lowest Loss:       {lowest_loss}")
-        if lowest_loss_loop < lowest_loss:
-            lowest_loss = lowest_loss_loop
-            X = sX  # save best state_grid
-            # gap = last_saved - lowest_loss
-            # if gap > .0001:
-            last_saved = lowest_loss
-            torch.save(X, f"data/train_model/{epoch}_CA_State.pt")
-            save_img(X, name=f'train/{epoch}_CA_Image')
+        print(f'Loss:              {loss}')
+        torch.save(X, f"data/train_model/{epoch}_CA_State.pt")
+        save_img(X, name=f'train/{epoch}_CA_Image')
 
 
-# FIXME: not saving images or.. model not working
-# def test_loop(data, model, loss_fn, epochs=1000):
+def train_loop(model, optimizer, loss_fn, data_loader, target, epochs=1000):
+    return 0
+    
+
+
 def test_loop(model: CANN, data_loader, epochs=1000):
     with torch.no_grad():
         X = init_grid(40).to(device)
-        # lowest_loss = 1
-        batch_size = data_loader.batch_size
-        X = X.repeat(batch_size, 1, 1, 1)
         print("\n\nTesting...")
         for epoch in range(epochs):
             print(f"\n--------------------------")
             print(f"Epoch {epoch}")
-            # lowest_loss_loop = lowest_loss
-            # sX = X
             for y in data_loader:
                 y = y.to(device)
-
                 y_pred = model(X)  # returns updated grid
 
                 X = y_pred
 
-                save_img(X, name=f'test/{epoch}_CA_Image')
-            #     loss = loss_fn(y_pred[..., :3], y)  # only use rgb for loss
-            #
-            #
-            #     if loss < lowest_loss_loop:
-            #         lowest_loss_loop = loss
-            #         sX = y_pred.detach()  # save best state_grid
-            #
-            #
-            # live_cells = (X[..., 3] > 0.1).sum().item()
-            # growing_cells = (X[..., 3] > 0).sum().item() - live_cells
-            # print(f"Imature cells:     {growing_cells}")
-            # print(f"Mature cells:      {live_cells}")
-            # print(f"Total live cells:  {growing_cells + live_cells}")
-            # print(f"Loss:              {lowest_loss_loop}")
-            # print(f"Lowest Loss:       {lowest_loss}")
-            # if lowest_loss_loop < lowest_loss:
-            #     lowest_loss = lowest_loss_loop
-            #     X = sX  # save best state_grid
-            #     save_img(X, name=f'test/{epoch}_CA_Image')
+            save_img(X, name=f'test/{epoch}_CA_Image')
 
 def save_img(X, name="CA_Image"):
-    img = np_to_image(X[0, :, :, :3].to("cpu").detach().numpy())
-    img.save(f"data/{name}.png")
+    transform = transforms.ToPILImage()
+    tensor = X[0, :3, :, :]
+    pil_image = transform(tensor)
+    pil_image.save(f"data/{name}.png")
 
 def main():
+    # HYPERPARAMETERS
+    BATCH_SIZE = 8
+    LEARNING_RATE = 0.001
+    NUM_EPOCHS = 8000
+    NUM_STEPS = 250
+    POOL_SIZE = 1024
+
+    # CONSTANTS
+    N_CHANNELS = 16
+    CELL_UPDATE_CHANCE = 0.5
+    EMOJI_SIZE = 40
+
+    # DEVICE MAKER
     get_device()
-    emoji = load_emoji("🤑")
-    # emoji = load_emoji("🥰")
-    # emoji = load_image("res/money_mouth_face.png")
 
-    model = CANN().to(device)
-    loss_fn = nn.MSELoss()  # prob need to fix loss
-    learning_rate = 0.002
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    # LOGGING FILES
+    log_path = pathlib.Path("logs")
+    log_path.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_path)
 
-    dataset = CellularAutomataDataset(emoji, num_items=1000)
-    dataloader = DataLoader(dataset, batch_size=10)
-    train_loop(model, optimizer, loss_fn, dataloader, epochs=1000)
+    # add in padding to prevent weird edges with edges of emoji
+    target_emoji_unpadded = load_emoji("🤑")
+    target_emoji_unpadded = F.pad(target_emoji_unpadded,(1, 1, 1, 1), "constant", 0)
+    target_emoji = target_emoji_unpadded.to(device)
+    # create batch of emojis
+    target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
+    # initialize model, optimizer, and loss function
+    model = CANN(n_channels=N_CHANNELS, cell_update_chance=CELL_UPDATE_CHANCE).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    loss_fn = nn.MSELoss()
+
+    # initialize empty grid with 1 pixel at the center
+    start_grid = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
+    # pad start grid
+    start_grid = F.pad(start_grid,(1, 1, 1, 1), "constant", 0)
+    # create pool of values
+    pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
+
+    for count in (range(NUM_EPOCHS)):
+        print(f"EPOCH: {count}")
+
+        batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE ,replace=False).tolist()
+        X = pool_grid[batch_ids]
+        for i in range(NUM_STEPS):
+            X = model(X)
+
+        loss = loss_fn(X[:, :4, ...], target_emoji)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        print(f'Loss:              {loss}')
+        writer.add_scalar("train/loss", loss, count)
+        # TODO: FIX SAVE IMAGE
+        save_img(X, name=f'train/{count}_CA_Image')
+
+        # find which generation got the worst loss
+        argmax_batch = loss.argmax().item()
+        argmax_pool = batch_ids[argmax_batch]
+        # remove the bad sample
+        remaining_batch = [i for i in range(BATCH_SIZE) if i != argmax_batch]
+        remaining_pool = [i for i in batch_ids if i != argmax_pool]
+
+        # replace the bad growth with a new black pixel and try again
+        pool_grid[argmax_pool] = start_grid.clone()
+        pool_grid[remaining_pool] = X[remaining_batch].detach()
     # save model
     torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")
     print("\nSaved model to data/CA_Model.pt\n\n")
-
-    test_loop(model, dataloader)
-
 
 
 if __name__ == "__main__":
