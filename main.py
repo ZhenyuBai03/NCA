@@ -38,42 +38,62 @@ class CANN(nn.Module):
         self.cell_update_chance = cell_update_chance
 
         self.seq = nn.Sequential(
-            nn.Conv2d(48, 128, kernel_size=1),
+            nn.Conv2d(n_channels * 3, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(128, n_channels, kernel_size=1, bias=False),
         )
 
-        # why do we need this?
+        # initialize weights to zero to prevent random noise
         with torch.no_grad():
+            self.seq[0].weight.zero_()
             self.seq[2].weight.zero_()
 
     def perceived_vector(self, X):
-        # TODO: REVERT THIS TO OLD CODE
-        sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
-        scalar = 8.0
+        # sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        # scalar = 8.0
+        #
+        # sobel_filter_x = sobel_filter_ / scalar
+        # sobel_filter_y = sobel_filter_.t() / scalar
+        # identity_filter = torch.tensor(
+        #     [
+        #         [0, 0, 0],
+        #         [0, 1, 0],
+        #         [0, 0, 0],
+        #     ],
+        #     dtype=torch.float32,
+        # )
+        # filters = torch.stack(
+        #     [identity_filter, sobel_filter_x, sobel_filter_y]
+        # )  # (3, 3, 3)
+        # filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
+        # stacked_filters = filters[:, None, ...].to(device)
+        #
+        # perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
+        identity = torch.zeros((1, 1, 3, 3), dtype=torch.float32, device=X.device)
+        identity[:, :, 1, 1] = 1
 
-        sobel_filter_x = sobel_filter_ / scalar
-        sobel_filter_y = sobel_filter_.t() / scalar
-        identity_filter = torch.tensor(
-            [
-                [0, 0, 0],
-                [0, 1, 0],
-                [0, 0, 0],
-            ],
-            dtype=torch.float32,
+        sobel_x = (
+            torch.tensor(
+                [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                dtype=torch.float32,
+                device=X.device,
+            ).view(1, 1, 3, 3)
+            / 8.0
         )
-        filters = torch.stack(
-            [identity_filter, sobel_filter_x, sobel_filter_y]
-        )  # (3, 3, 3)
-        filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
-        stacked_filters = filters[:, None, ...].to(device)
+        sobel_y = sobel_x.transpose(2, 3)
 
-        perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
+        identity = identity.repeat(self.n_channels, 1, 1, 1)
+        sobel_x = sobel_x.repeat(self.n_channels, 1, 1, 1)
+        sobel_y = sobel_y.repeat(self.n_channels, 1, 1, 1)
+
+        stacked_kernels = torch.cat((sobel_x, sobel_y, identity))
+
+        perceived = F.conv2d(X, stacked_kernels, padding=1, groups=self.n_channels)
 
         return perceived
 
     def stochastic_update(self, X):
-        mask = (torch.rand(X[:, :1, :, :].shape) <= self.cell_update_chance).to(
+        mask = (torch.rand(X[:, :1, :, :].shape) < self.cell_update_chance).to(
             device, torch.float32
         )
         return X * mask
@@ -169,11 +189,7 @@ def main():
     BATCH_SIZE = 8
     LEARNING_RATE = 0.002
     NUM_EPOCHS = 8000
-
-    def NUM_STEPS():
-        return np.random.randint(50, 150)
-        # return 250
-
+    def NUM_STEPS(): return np.random.randint(64, 96)
     POOL_SIZE = 1024
 
     # CONSTANTS
@@ -212,8 +228,6 @@ def main():
 
     best_loss = 1
     for count in range(NUM_EPOCHS):
-        # print(f"\nEPOCH: {count}")
-
         batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
         X = pool_grid[batch_ids]
         for _ in range(NUM_STEPS()):
@@ -225,7 +239,6 @@ def main():
         loss.backward()
         optimizer.step()
         writer.add_scalar("train/loss", loss, count)
-        # TODO: FIX SAVE IMAGE
         if loss < best_loss:
             best_loss = loss
             save_img(X, name=f"train/{count}_CA_Image")
