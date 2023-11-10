@@ -118,14 +118,14 @@ class CANN(nn.Module):
         return X * live_mask
 
 
-def load_emoji(emoji):
+def load_emoji(emoji, size=40):
     code = hex(ord(emoji))[2:].lower()
     url = (
         "https://github.com/googlefonts/noto-emoji/blob/main/png/128/emoji_u%s.png?raw=true"
         % code
     )
     r = requests.get(url)
-    return load_image(io.BytesIO(r.content))
+    return load_image(io.BytesIO(r.content), max_size=size)
 
 
 def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
@@ -194,8 +194,8 @@ def main():
 
     # CONSTANTS
     N_CHANNELS = 16
-    CELL_UPDATE_CHANCE = 0.5
-    EMOJI_SIZE = 40
+    CELL_UPDATE_CHANCE = 0.25
+    EMOJI_SIZE = 80
 
     # DEVICE MAKER
     get_device()
@@ -206,7 +206,7 @@ def main():
     writer = SummaryWriter(log_path)
 
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji("🤑")
+    target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
     # create batch of emojis
