@@ -6,7 +6,7 @@ def main():
     ca.get_device()
 
     # load model
-    model = ca.CANN(n_channels=16, cell_update_chance=0.5).to(ca.device)
+    model = ca.CANN(n_channels=16, cell_survival_rate=0.5).to(ca.device)
     model.load_state_dict(torch.load('data/CA_Model_FINAL.pt'))
     model.eval()
 

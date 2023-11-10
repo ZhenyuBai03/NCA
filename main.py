@@ -32,10 +32,10 @@ class CANN(nn.Module):
         - a == 0 = dead
     """
 
-    def __init__(self, n_channels, cell_update_chance):
+    def __init__(self, n_channels, cell_survival_rate):
         super().__init__()
         self.n_channels = n_channels
-        self.cell_update_chance = cell_update_chance
+        self.cell_survival_rate = cell_survival_rate
 
         self.seq = nn.Sequential(
             nn.Conv2d(n_channels * 3, 128, kernel_size=1),
@@ -73,7 +73,7 @@ class CANN(nn.Module):
         return perceived
 
     def stochastic_update(self, X):
-        mask = (torch.rand(X[:, :1, :, :].shape) < self.cell_update_chance).to(
+        mask = (torch.rand(X[:, :1, :, :].shape) < self.cell_survival_rate).to(
             device, torch.float32
         )
         return X * mask
@@ -177,8 +177,9 @@ def main():
 
     # CONSTANTS
     N_CHANNELS = 16
-    CELL_UPDATE_CHANCE = 0.5
-    EMOJI_SIZE = 80
+    CELL_SURVIVAL_RATE = 0.5
+    CELL_SURVIVAL_RATE_TWO = 0.75
+    EMOJI_SIZE = 40
 
     # DEVICE MAKER
     get_device()
@@ -189,14 +190,15 @@ def main():
     writer = SummaryWriter(log_path)
 
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
+    target_emoji_unpadded = load_emoji("💩", size=EMOJI_SIZE)
+    # target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
     # create batch of emojis
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
     # initialize model, optimizer, and loss function
-    model = CANN(n_channels=N_CHANNELS, cell_update_chance=CELL_UPDATE_CHANCE).to(
+    model = CANN(n_channels=N_CHANNELS, cell_survival_rate=CELL_SURVIVAL_RATE).to(
         device
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -230,6 +232,8 @@ def main():
             for g in optimizer.param_groups:
                 g["lr"] = LEARNING_RATE_TWO
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_TWO})")
+        if epoch == 2000:
+                model.cell_survival_rate = CELL_SURVIVAL_RATE_TWO
         if epoch == 3000:
             for g in optimizer.param_groups:
                 g["lr"] = LEARNING_RATE_THREE
