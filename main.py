@@ -49,26 +49,6 @@ class CANN(nn.Module):
             self.seq[2].weight.zero_()
 
     def perceived_vector(self, X):
-        # sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
-        # scalar = 8.0
-        #
-        # sobel_filter_x = sobel_filter_ / scalar
-        # sobel_filter_y = sobel_filter_.t() / scalar
-        # identity_filter = torch.tensor(
-        #     [
-        #         [0, 0, 0],
-        #         [0, 1, 0],
-        #         [0, 0, 0],
-        #     ],
-        #     dtype=torch.float32,
-        # )
-        # filters = torch.stack(
-        #     [identity_filter, sobel_filter_x, sobel_filter_y]
-        # )  # (3, 3, 3)
-        # filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
-        # stacked_filters = filters[:, None, ...].to(device)
-        #
-        # perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
         identity = torch.zeros((1, 1, 3, 3), dtype=torch.float32, device=X.device)
         identity[:, :, 1, 1] = 1
 
@@ -86,7 +66,7 @@ class CANN(nn.Module):
         sobel_x = sobel_x.repeat(self.n_channels, 1, 1, 1)
         sobel_y = sobel_y.repeat(self.n_channels, 1, 1, 1)
 
-        stacked_kernels = torch.cat((sobel_x, sobel_y, identity))
+        stacked_kernels = torch.cat((identity, sobel_x, sobel_y))
 
         perceived = F.conv2d(X, stacked_kernels, padding=1, groups=self.n_channels)
 
@@ -151,9 +131,6 @@ def init_grid(size, n_channels):
     X[:, 3:, size // 2, size // 2] = 1
     return X
 
-def train_loop(model, optimizer, loss_fn, data_loader, target, epochs=1000):
-    return 0
-
 
 def test_loop(model: CANN, EMOJI_SIZE, N_CHANNELS=16, epochs=8000):
     images = []
@@ -188,13 +165,19 @@ def main():
     # HYPERPARAMETERS
     BATCH_SIZE = 8
     LEARNING_RATE = 0.002
+    LEARNING_RATE_TWO = 0.0002
+    LEARNING_RATE_THREE = 0.00002
+
     NUM_EPOCHS = 8000
-    def NUM_STEPS(): return np.random.randint(64, 96)
+
+    def NUM_STEPS():
+        return np.random.randint(64, 96)
+
     POOL_SIZE = 1024
 
     # CONSTANTS
     N_CHANNELS = 16
-    CELL_UPDATE_CHANCE = 0.25
+    CELL_UPDATE_CHANCE = 0.5
     EMOJI_SIZE = 80
 
     # DEVICE MAKER
@@ -227,7 +210,7 @@ def main():
     pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
 
     best_loss = 1
-    for count in range(NUM_EPOCHS):
+    for epoch in range(NUM_EPOCHS):
         batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
         X = pool_grid[batch_ids]
         for _ in range(NUM_STEPS()):
@@ -238,11 +221,19 @@ def main():
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        writer.add_scalar("train/loss", loss, count)
+        writer.add_scalar("train/loss", loss, epoch)
         if loss < best_loss:
             best_loss = loss
-            save_img(X, name=f"train/{count}_CA_Image")
-        print(f"EPOCH {count}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
+            save_img(X, name=f"train/{epoch}_CA_Image")
+        print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
+        if epoch == 1000:
+            for g in optimizer.param_groups:
+                g["lr"] = LEARNING_RATE_TWO
+            print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_TWO})")
+        if epoch == 3000:
+            for g in optimizer.param_groups:
+                g["lr"] = LEARNING_RATE_THREE
+            print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
         # find which generation got the worst loss
         argmax_batch = loss.argmax().item()
