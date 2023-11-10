@@ -178,7 +178,6 @@ def main():
     # CONSTANTS
     N_CHANNELS = 16
     CELL_SURVIVAL_RATE = 0.5
-    CELL_SURVIVAL_RATE_TWO = 0.75
     EMOJI_SIZE = 40
 
     # DEVICE MAKER
@@ -226,14 +225,12 @@ def main():
         writer.add_scalar("train/loss", loss, epoch)
         if loss < best_loss:
             best_loss = loss
-            save_img(X, name=f"train/{epoch}_CA_Image")
+        save_img(X, name=f"train/{epoch}_CA_Image")
         print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
         if epoch == 1000:
             for g in optimizer.param_groups:
                 g["lr"] = LEARNING_RATE_TWO
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_TWO})")
-        if epoch == 2000:
-                model.cell_survival_rate = CELL_SURVIVAL_RATE_TWO
         if epoch == 3000:
             for g in optimizer.param_groups:
                 g["lr"] = LEARNING_RATE_THREE
