@@ -113,14 +113,6 @@ def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
     orig_im = torch.from_numpy(orig_im).permute(2, 0, 1)[None, ...]
     return orig_im
 
-
-def to_rgb(img_rgba):
-    # convert our RGBA image into a rgb image tensor and a alpha value tensor
-    # also make sure that alpha value is between 0 and 1
-    rgb, a = img_rgba[:, :3, ...], torch.clamp(img_rgba[..., 3:], 0, 1)
-    return torch.clamp(1.0 - a + rgb, 0, 1)
-
-
 def init_grid(size, n_channels):
     # Creates our initial image with a single black pixel
     # initializes all channels except the RGB to 1.0
@@ -193,19 +185,19 @@ def main():
     # create batch of emojis
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
-    # initialize model, optimizer, and loss function
-    model = CANN(n_channels=N_CHANNELS, cell_survival_rate=CELL_SURVIVAL_RATE).to(
-        device
-    )
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn = nn.MSELoss()
-
     # initialize empty grid with 1 pixel at the center
     start_grid = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
     # pad start grid
     start_grid = F.pad(start_grid, (1, 1, 1, 1), "constant", 0)
     # create pool of values
     pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
+
+    # initialize model, optimizer, and loss function
+    model = CANN(n_channels=N_CHANNELS, cell_survival_rate=CELL_SURVIVAL_RATE).to(
+        device
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    loss_fn = nn.MSELoss()
 
     best_loss = 1
     for epoch in range(NUM_EPOCHS):
