@@ -45,30 +45,27 @@ class CANN(nn.Module):
 
         # initialize weights to zero to prevent random noise
         with torch.no_grad():
-            self.seq[0].weight.zero_()
             self.seq[2].weight.zero_()
 
     def perceived_vector(self, X):
-        identity = torch.zeros((1, 1, 3, 3), dtype=torch.float32, device=X.device)
-        identity[:, :, 1, 1] = 1
+        sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        scalar = 8.0
 
-        sobel_x = (
-            torch.tensor(
-                [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+        sobel_filter_x = sobel_filter_ / scalar
+        sobel_filter_y = sobel_filter_.t() / scalar
+        identity_filter = torch.tensor(
+                [
+                    [0, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 0],
+                ],
                 dtype=torch.float32,
-                device=X.device,
-            ).view(1, 1, 3, 3)
-            / 8.0
         )
-        sobel_y = sobel_x.transpose(2, 3)
+        filters = torch.stack([identity_filter, sobel_filter_x, sobel_filter_y])  # (3, 3, 3)
+        filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
+        stacked_filters = filters[:, None, ...].to(device)
 
-        identity = identity.repeat(self.n_channels, 1, 1, 1)
-        sobel_x = sobel_x.repeat(self.n_channels, 1, 1, 1)
-        sobel_y = sobel_y.repeat(self.n_channels, 1, 1, 1)
-
-        stacked_kernels = torch.cat((identity, sobel_x, sobel_y))
-
-        perceived = F.conv2d(X, stacked_kernels, padding=1, groups=self.n_channels)
+        perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
 
         return perceived
 
@@ -189,7 +186,7 @@ def main():
     writer = SummaryWriter(log_path)
 
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji("💩", size=EMOJI_SIZE)
+    target_emoji_unpadded = load_emoji("😢", size=EMOJI_SIZE)
     # target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
