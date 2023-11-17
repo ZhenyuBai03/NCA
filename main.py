@@ -226,7 +226,7 @@ def main():
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
         # find which generation got the worst loss
-        argmax_batch = argmax_batch = loss_batch.argmax().item()
+        argmax_batch = loss_batch.argmax().item()
         argmax_pool = batch_ids[argmax_batch]
         # remove the bad sample
         remaining_batch = [i for i in range(BATCH_SIZE) if i != argmax_batch]
