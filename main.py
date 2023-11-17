@@ -197,7 +197,6 @@ def main():
         device
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn = nn.MSELoss()
 
     best_loss = 1
     for epoch in range(NUM_EPOCHS):
