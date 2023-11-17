@@ -206,7 +206,8 @@ def main():
         for _ in range(NUM_STEPS()):
             X = model(X)
 
-        loss = loss_fn(X[:, :4, ...], target_emoji)
+        loss_batch = ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
+        loss = loss_batch.mean()
 
         optimizer.zero_grad()
         loss.backward()
@@ -226,7 +227,7 @@ def main():
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
         # find which generation got the worst loss
-        argmax_batch = loss.argmax().item()
+        argmax_batch = argmax_batch = loss_batch.argmax().item()
         argmax_pool = batch_ids[argmax_batch]
         # remove the bad sample
         remaining_batch = [i for i in range(BATCH_SIZE) if i != argmax_batch]
