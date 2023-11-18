@@ -76,10 +76,8 @@ class CANN(nn.Module):
         return X * mask
 
     def live_cell_mask(self, X, alpha_threshold=0.1):
-        return (
-            F.max_pool2d(X[:, 3:4, :, :], kernel_size=3, stride=1, padding=1)
-            > alpha_threshold
-        )
+        val = F.max_pool2d(X[:, 3:4, :, :], kernel_size=3, stride=1, padding=1) > alpha_threshold
+        return (val)
 
     def forward(self, X):
         pre_mask = self.live_cell_mask(X)
@@ -107,10 +105,10 @@ def load_emoji(emoji, size=40):
 
 def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
     orig_im = Image.open(path)
-    orig_im.thumbnail((max_size, max_size), resample=Image.BILINEAR)
+    orig_im.thumbnail((max_size, max_size), resample=Image.LANCZOS)
     orig_im = np.float32(orig_im) / 255.0
     orig_im[..., :3] *= orig_im[..., 3:]
-    orig_im = torch.from_numpy(orig_im).permute(2, 0, 1)[None, ...]
+    orig_im = torch.from_numpy(orig_im).permute(2, 0,    1)[None, ...]
     return orig_im
 
 def init_grid(size, n_channels):
@@ -129,8 +127,8 @@ def test_loop(model: CANN, EMOJI_SIZE, N_CHANNELS=16, epochs=8000):
         for epoch in range(epochs):
             print(f"Epoch {epoch:10}/{epochs}", end="\r")
             X = model(X)
-            images.append(transforms.ToPILImage()(X[0, :3, :, :]))
-            save_img(X, name=f"test/{epoch}_CA_Image")
+            images.append(transforms.ToPILImage()(X[0, :4, :, :]))
+            save_img_other(X, name=f"test/{epoch}_CA_Image")
         print("\n\n")
     make_gif(images)
 
@@ -145,6 +143,12 @@ def make_gif(images):
 
 def save_img(X, name="CA_Image"):
     transform = transforms.ToPILImage()
+    tensor = X[:3, :, :]
+    pil_image = transform(tensor)
+    pil_image.save(f"data/{name}.jpg")
+
+def save_img_other(X, name="CA_Image"):
+    transform = transforms.ToPILImage()
     tensor = X[0, :3, :, :]
     pil_image = transform(tensor)
     pil_image.save(f"data/{name}.jpg")
@@ -152,10 +156,10 @@ def save_img(X, name="CA_Image"):
 
 def main():
     # HYPERPARAMETERS
-    BATCH_SIZE = 8
+    BATCH_SIZE = 4
     LEARNING_RATE = 0.002
-    LEARNING_RATE_TWO = 0.0002
-    LEARNING_RATE_THREE = 0.00002
+    LEARNING_RATE_TWO = 0.002
+    LEARNING_RATE_THREE = 0.002
 
     NUM_EPOCHS = 8000
 
@@ -178,7 +182,7 @@ def main():
     writer = SummaryWriter(log_path)
 
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji("😢", size=EMOJI_SIZE)
+    target_emoji_unpadded = load_emoji("🦎", size=EMOJI_SIZE)
     # target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
@@ -214,7 +218,8 @@ def main():
         writer.add_scalar("train/loss", loss, epoch)
         if loss < best_loss:
             best_loss = loss
-        save_img(X, name=f"train/{epoch}_CA_Image")
+        best_image_in_epoch = loss_batch.argmin().item()
+        save_img(X[best_image_in_epoch], name=f"train/{epoch}_CA_Image")
         print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
         if epoch == 1000:
             for g in optimizer.param_groups:
