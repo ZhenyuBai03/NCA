@@ -1,5 +1,7 @@
 import torch
 import main as ca
+from torch import nn
+import torch.nn.functional as F
 
 def main():
     # set device
@@ -12,7 +14,8 @@ def main():
 
     # test model
     emoji = ca.load_emoji("🤑")
-    ca.test_loop(model, emoji.shape[-1])
+    #emoji = F.pad(emoji, (1, 1, 1, 1), "constant", 0)
+    ca.test_loop(model, emoji.shape[-1], epochs=8000)
 
 
 if __name__ == "__main__":
