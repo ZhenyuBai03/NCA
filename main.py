@@ -3,6 +3,7 @@ import requests
 import pathlib
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 import torch
 from torch import nn
@@ -11,7 +12,9 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 
 from PIL import Image
+import torchvision.utils as T
 
+plt.ion()
 
 def get_device():
     global device
@@ -63,16 +66,14 @@ class CANN(nn.Module):
         )
         filters = torch.stack([identity_filter, sobel_filter_x, sobel_filter_y])  # (3, 3, 3)
         filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
-        stacked_filters = filters[:, None, ...].to(device)
+        stacked_filters = filters[:, None, ...].to(device) # (3 * n_channels, 1, 3, 3)
 
         perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
 
         return perceived
 
     def stochastic_update(self, X):
-        mask = (torch.rand(X[:, :1, :, :].shape) < self.cell_survival_rate).to(
-            device, torch.float32
-        )
+        mask = (torch.rand(X[:, :1, :, :].shape) <= self.cell_survival_rate).to(device, torch.float32)
         return X * mask
 
     def live_cell_mask(self, X, alpha_threshold=0.1):
@@ -146,13 +147,35 @@ def make_gif(images):
 def save_img(X, name="CA_Image"):
     transform = transforms.ToPILImage()
     tensor = X[0, :3, :, :]
+    print(tensor.shape)
     pil_image = transform(tensor)
-    pil_image.save(f"data/{name}.jpg")
+    pil_image.save(f"data/{name}.png")
+
+def save_pool_img(pool_grid, name="CA_Image"):
+    transform = transforms.ToPILImage()
+    w = int(np.ceil(np.sqrt(len(pool_grid))))
+    rgb = pool_grid[:, :3, ...]
+    alpha = pool_grid[:, 3:4, ...]
+    pool_grid = 1.0 - alpha + rgb
+    pool_grid = T.make_grid(pool_grid[:, :3, ...], nrow=w)
+    pil_image = transform(pool_grid)
+    pil_image.save(f"data/{name}.png")
+
+def save_batch_img(X0, X, name="CA_Image"):
+    transform = transforms.ToPILImage()
+    X = torch.cat([X0, X], dim=0)
+    rgb = X[:, :3, ...]
+    alpha = X[:, 3:4, ...]
+    X = 1.0 - alpha + rgb
+    image_grid = T.make_grid(X[:, :3, ...], nrow=8)
+    pil_image = transform(image_grid)
+    pil_image.save(f"data/{name}.png")
 
 
 def main():
     # HYPERPARAMETERS
     BATCH_SIZE = 8
+    PAD_SIZE = 1
     LEARNING_RATE = 0.002
     LEARNING_RATE_TWO = 0.0002
     LEARNING_RATE_THREE = 0.00002
@@ -180,7 +203,7 @@ def main():
     # add in padding to prevent weird edges with edges of emoji
     target_emoji_unpadded = load_emoji("😢", size=EMOJI_SIZE)
     # target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
-    target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
+    target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
     # create batch of emojis
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
@@ -188,7 +211,7 @@ def main():
     # initialize empty grid with 1 pixel at the center
     start_grid = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
     # pad start grid
-    start_grid = F.pad(start_grid, (1, 1, 1, 1), "constant", 0)
+    start_grid = F.pad(start_grid, [PAD_SIZE]*4, "constant", 0)
     # create pool of values
     pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
 
@@ -199,22 +222,35 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     best_loss = 1
+
+    def get_loss(X):
+        return ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
+    loss_log = []
+
     for epoch in range(NUM_EPOCHS):
         batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
         X = pool_grid[batch_ids]
+        loss_rank = get_loss(X).cpu().numpy().argsort()[::-1]
+        batch_ids = np.array(batch_ids)[loss_rank]
+        X = pool_grid[batch_ids]
+
+        X[0] = start_grid
+        X0 = X.clone()
+
         for _ in range(NUM_STEPS()):
             X = model(X)
 
-        loss_batch = ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
-        loss = loss_batch.mean()
+        loss = get_loss(X).mean()
+        loss_log.append(loss)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         writer.add_scalar("train/loss", loss, epoch)
+
         if loss < best_loss:
             best_loss = loss
-        save_img(X, name=f"train/{epoch}_CA_Image")
         print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
         if epoch == 1000:
             for g in optimizer.param_groups:
@@ -225,17 +261,14 @@ def main():
                 g["lr"] = LEARNING_RATE_THREE
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
-        # find which generation got the worst loss
-        argmax_batch = loss_batch.argmax().item()
-        argmax_pool = batch_ids[argmax_batch]
-        # remove the bad sample
-        remaining_batch = [i for i in range(BATCH_SIZE) if i != argmax_batch]
-        remaining_pool = [i for i in batch_ids if i != argmax_pool]
+        # update pool
+        pool_grid[batch_ids] = X.detach()
+        if epoch % 10 == 0:
+            save_batch_img(X0, X, name=f"train/Batch_Image_{epoch}")
+            save_pool_img(pool_grid, name=f"train/Pool_Image_{epoch}")
 
-        # replace the bad growth with a new black pixel and try again
-        pool_grid[argmax_pool] = start_grid.clone()
-        pool_grid[remaining_pool] = X[remaining_batch].detach()
     # save model
+    writer.close()
     torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")
     print("\nSaved model to data/CA_Model.pt\n\n")
 
