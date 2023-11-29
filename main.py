@@ -1,6 +1,7 @@
 import io
 import requests
 import pathlib
+import argparse
 
 import numpy as np
 
@@ -11,16 +12,39 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 
 from PIL import Image
+import torchvision.utils as T
 
+######################################################
+# CONSTANTS
+BATCH_SIZE = 8
+PAD_SIZE = 1
+LEARNING_RATE = 0.002
+LEARNING_RATE_TWO = 0.0002
+LEARNING_RATE_THREE = 0.00002
 
+NUM_EPOCHS = 8000
+
+def NUM_STEPS():
+    return np.random.randint(64, 96)
+
+POOL_SIZE = 1024
+
+# CONSTANTS
+N_CHANNELS = 16
+CELL_SURVIVAL_RATE = 0.5
+EMOJI_SIZE = 40
+
+# DEVICE MAKER
 def get_device():
     global device
     device = "cpu"
     device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
     device = torch.device("cuda") if torch.cuda.is_available() else device
     print(f"Using device: {device}")
+get_device()
 
-
+######################################################
+# MODEL
 class CANN(nn.Module):
     """
     Cellular Automata Neural Net
@@ -63,16 +87,14 @@ class CANN(nn.Module):
         )
         filters = torch.stack([identity_filter, sobel_filter_x, sobel_filter_y])  # (3, 3, 3)
         filters = filters.repeat((16, 1, 1))  # (3 * n_channels, 3, 3)
-        stacked_filters = filters[:, None, ...].to(device)
+        stacked_filters = filters[:, None, ...].to(device) # (3 * n_channels, 1, 3, 3)
 
         perceived = F.conv2d(X, stacked_filters, padding=1, groups=self.n_channels)
 
         return perceived
 
     def stochastic_update(self, X):
-        mask = (torch.rand(X[:, :1, :, :].shape) < self.cell_survival_rate).to(
-            device, torch.float32
-        )
+        mask = (torch.rand(X[:, :1, :, :].shape) <= self.cell_survival_rate).to(device, torch.float32)
         return X * mask
 
     def live_cell_mask(self, X, alpha_threshold=0.1):
@@ -92,9 +114,12 @@ class CANN(nn.Module):
 
         return X * live_mask
 
-
+######################################################
+# UTILS
+#
 def load_emoji(emoji, size=40):
     code = hex(ord(emoji))[2:].lower()
+    print(f"Loading emoji: {emoji} ({code})")
     url = (
         "https://github.com/googlefonts/noto-emoji/blob/main/png/128/emoji_u%s.png?raw=true"
         % code
@@ -118,81 +143,111 @@ def init_grid(size, n_channels):
     X[:, 3:, size // 2, size // 2] = 1
     return X
 
+def to_rgb(img_rgba):
+    if img_rgba.dim() == 3:  
+        rgb, a = img_rgba[:3, :, :], torch.clamp(img_rgba[3:4, ...], 0, 1)
+    else:
+        rgb, a = img_rgba[:, :3, ...], torch.clamp(img_rgba[:, 3:4, ...], 0, 1)
+    return torch.clamp(1.0 - a + rgb, 0, 1)
 
-def test_loop(model: CANN, EMOJI_SIZE, N_CHANNELS=16, epochs=8000):
-    images = []
-    with torch.no_grad():
-        X = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
-        print("\n\nTesting...")
-        for epoch in range(epochs):
-            print(f"Epoch {epoch:10}/{epochs}", end="\r")
-            X = model(X)
-            images.append(transforms.ToPILImage()(X[0, :4, :, :]))
-            save_img_other(X, name=f"test/{epoch}_CA_Image")
-        print("\n\n")
-    make_gif(images)
-
-
-def make_gif(images):
-    print("Making gif...")
+def make_gif(images, img_name):
+    print(f"Making {img_name} gif...")
+    gif_dir = f"data/{img_name}.gif"
     images[0].save(
         "data/test.gif", save_all=True, append_images=images[1:], duration=100, loop=0
     )
     print("Saved gif to data/test.gif")
 
 
-def save_img(X, name="CA_Image"):
+def save_img(X, save_dir, mode="normal"):
+    mode_type = ["normal", "batch", "pool"]
+    if mode not in mode_type:
+        raise ValueError(f"mode must be one of {mode_type}")
+
     transform = transforms.ToPILImage()
-    tensor = X[:3, :, :]
-    pil_image = transform(tensor)
-    pil_image.save(f"data/{name}.jpg")
+    image_grid = to_rgb(X)
+    if mode == "batch":
+        image_grid = T.make_grid(image_grid, nrow=8)
+    elif mode == "pool":
+        w = int(np.ceil(np.sqrt(len(X))))
+        image_grid = T.make_grid(image_grid, nrow=w)
 
-def save_img_other(X, name="CA_Image"):
-    transform = transforms.ToPILImage()
-    tensor = X[0, :3, :, :]
-    pil_image = transform(tensor)
-    pil_image.save(f"data/{name}.jpg")
+    pil_image = transform(image_grid)
+    pil_image.save(save_dir)
 
+######################################################
+# TEST LOOP
+#
+def test_loop(model: CANN, emoji, N_CHANNELS=16, epochs=8000, visualize_pool=True):
+    pool_images = []
+    if visualize_pool:
+        pool_dir = pathlib.Path("data/train/")
+        filepathes = sorted(pool_dir.glob("Pool_Image_*.png"), 
+                            key=lambda item: item.name)
 
+        print("Loading pool images...")
+        for count, filepath in enumerate(filepathes):
+            if count % 50 == 0:
+                img = Image.open(filepath)
+                img_tensor = transforms.ToTensor()(img)
+                pool_images.append(transforms.ToPILImage()(img_tensor))
+                img.close()
+        make_gif(pool_images, "pool"+emoji)
+
+    emoji_images = []
+    with torch.no_grad():
+        X = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
+        print("\n\nTesting...")
+        for epoch in range(epochs):
+            print(f"Epoch {epoch:10}/{epochs}", end="\r")
+            X = model(X)
+            rgb_X = to_rgb(X[0])
+            emoji_images.append(transforms.ToPILImage()(rgb_X))
+        print("\n\n")
+    make_gif(emoji_images,emoji)
+
+######################################################
+# MAIN LOOP
+#
 def main():
-    # HYPERPARAMETERS
-    BATCH_SIZE = 4
-    LEARNING_RATE = 0.002
-    LEARNING_RATE_TWO = 0.002
-    LEARNING_RATE_THREE = 0.002
-
-    NUM_EPOCHS = 8000
-
-    def NUM_STEPS():
-        return np.random.randint(64, 96)
-
-    POOL_SIZE = 1024
-
-    # CONSTANTS
-    N_CHANNELS = 16
-    CELL_SURVIVAL_RATE = 0.5
-    EMOJI_SIZE = 40
-
-    # DEVICE MAKER
-    get_device()
+    parser = argparse.ArgumentParser(
+            description="Train Script for model to generate target emoji"
+    )
+    parser.add_argument(
+        "-i",
+        "--emoji",
+        type=str,
+        help="the emoji to generate",
+    )
+    parser.add_argument(
+            "-d",
+            "--to_data_path",
+            type=bool,
+            default=True,
+            help="whether to generate intermidiate images in /data",
+    )
+    # set device
+    args = parser.parse_args()
+    print(vars(args))
+    emoji = args.emoji
 
     # LOGGING FILES
     log_path = pathlib.Path("logs")
     log_path.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_path)
 
+    # TARGET EMOJI
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji("🦎", size=EMOJI_SIZE)
-    # target_emoji_unpadded = load_emoji("🤑", size=EMOJI_SIZE)
-    target_emoji_unpadded = F.pad(target_emoji_unpadded, (1, 1, 1, 1), "constant", 0)
+    target_emoji_unpadded = load_emoji(emoji, size=EMOJI_SIZE)
+    target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
-    # create batch of emojis
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
+    save_img(target_emoji[0], save_dir=f"./data/Target_{emoji}.png", mode="normal")
 
-    # initialize empty grid with 1 pixel at the center
+    # START GRID
     start_grid = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
     # pad start grid
-    start_grid = F.pad(start_grid, (1, 1, 1, 1), "constant", 0)
+    start_grid = F.pad(start_grid, [PAD_SIZE]*4, "constant", 0)
     # create pool of values
     pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
 
@@ -203,23 +258,34 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     best_loss = 1
+
+    def get_loss(X, target_emoji):
+        return ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
+
     for epoch in range(NUM_EPOCHS):
         batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
         X = pool_grid[batch_ids]
+        loss_rank = get_loss(X, target_emoji).cpu().numpy().argsort()[::-1]
+        batch_ids = np.array(batch_ids)[loss_rank]
+        X = pool_grid[batch_ids]
+
+        X[0] = start_grid
+        X0 = X.clone()
+
         for _ in range(NUM_STEPS()):
             X = model(X)
 
-        loss_batch = ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
-        loss = loss_batch.mean()
+        loss = get_loss(X, target_emoji).mean()
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         writer.add_scalar("train/loss", loss, epoch)
+
         if loss < best_loss:
             best_loss = loss
-        best_image_in_epoch = loss_batch.argmin().item()
-        save_img(X[best_image_in_epoch], name=f"train/{epoch}_CA_Image")
+
         print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
         if epoch == 1000:
             for g in optimizer.param_groups:
@@ -230,19 +296,18 @@ def main():
                 g["lr"] = LEARNING_RATE_THREE
             print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
-        # find which generation got the worst loss
-        argmax_batch = loss_batch.argmax().item()
-        argmax_pool = batch_ids[argmax_batch]
-        # remove the bad sample
-        remaining_batch = [i for i in range(BATCH_SIZE) if i != argmax_batch]
-        remaining_pool = [i for i in batch_ids if i != argmax_pool]
+        # update pool
+        pool_grid[batch_ids] = X.detach()
+        if epoch % 100 == 0 and args.to_data_path:
+            batch_grid = torch.cat([X0, X], dim=0).detach()
+            save_img(batch_grid, save_dir="data/train/Batch_Image_{:04d}.png".format(epoch), mode="batch")
+            save_img(pool_grid, save_dir="data/train/Pool_Image_{:04d}.png".format(epoch), mode="pool")
 
-        # replace the bad growth with a new black pixel and try again
-        pool_grid[argmax_pool] = start_grid.clone()
-        pool_grid[remaining_pool] = X[remaining_batch].detach()
     # save model
-    torch.save(model.state_dict(), "data/CA_Model_FINAL.pt")
-    print("\nSaved model to data/CA_Model.pt\n\n")
+    writer.close()
+    weight_path = f"data/CA_Model_{args.emoji}.pt"
+    torch.save(model.state_dict(), weight_path)
+    print("\nSaved model to\n\n", weight_path)
 
 
 if __name__ == "__main__":
