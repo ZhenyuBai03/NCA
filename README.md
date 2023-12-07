@@ -3,7 +3,7 @@
 Hi! Welcome to NCA. 
 ## Train:
 ```bash
-python3 train.py --emoji [str] --to_data_path [bool]
+python3 main.py --emoji [str] --to_data_path [bool]
 ```
 * `--emoji`: emoji to train on
 * `--to_data_path`: whether to save the batch image and pool images to "/data/train"
@@ -11,7 +11,7 @@ python3 train.py --emoji [str] --to_data_path [bool]
  
 **Example:**
 ```bash
-python3 train.py --emoji "😘" --to_data_path True
+python3 main.py --emoji "😘" --to_data_path True
 ```
 
 ## Test: 

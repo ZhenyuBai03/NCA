@@ -1,6 +1,6 @@
 import io
 import requests
-import pathlib
+from pathlib import Path
 import argparse
 
 import numpy as np
@@ -28,8 +28,6 @@ def NUM_STEPS():
     return np.random.randint(64, 96)
 
 POOL_SIZE = 1024
-
-# CONSTANTS
 N_CHANNELS = 16
 CELL_SURVIVAL_RATE = 0.5
 EMOJI_SIZE = 40
@@ -72,11 +70,11 @@ class CANN(nn.Module):
             self.seq[2].weight.zero_()
 
     def perceived_vector(self, X):
-        sobel_filter_ = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        sobel_filter = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
         scalar = 8.0
 
-        sobel_filter_x = sobel_filter_ / scalar
-        sobel_filter_y = sobel_filter_.t() / scalar
+        sobel_filter_x = sobel_filter / scalar
+        sobel_filter_y = sobel_filter.t() / scalar
         identity_filter = torch.tensor(
                 [
                     [0, 0, 0],
@@ -133,7 +131,7 @@ def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
     orig_im.thumbnail((max_size, max_size), resample=Image.LANCZOS)
     orig_im = np.float32(orig_im) / 255.0
     orig_im[..., :3] *= orig_im[..., 3:]
-    orig_im = torch.from_numpy(orig_im).permute(2, 0,    1)[None, ...]
+    orig_im = torch.from_numpy(orig_im).permute(2, 0, 1)[None, ...]
     return orig_im
 
 def init_grid(size, n_channels):
@@ -152,9 +150,9 @@ def to_rgb(img_rgba):
 
 def make_gif(images, img_name):
     print(f"Making {img_name} gif...")
-    gif_dir = f"data/{img_name}.gif"
+    gif_dir = Path(f"data/{img_name}.gif")
     images[0].save(
-        "data/test.gif", save_all=True, append_images=images[1:], duration=100, loop=0
+        gif_dir, save_all=True, append_images=images[1:], duration=100, loop=0
     )
     print("Saved gif to data/test.gif")
 
@@ -181,7 +179,7 @@ def save_img(X, save_dir, mode="normal"):
 def test_loop(model: CANN, emoji, N_CHANNELS=16, epochs=8000, visualize_pool=True):
     pool_images = []
     if visualize_pool:
-        pool_dir = pathlib.Path("data/train/")
+        pool_dir = Path("data/train/")
         filepathes = sorted(pool_dir.glob("Pool_Image_*.png"), 
                             key=lambda item: item.name)
 
@@ -232,7 +230,7 @@ def main():
     emoji = args.emoji
 
     # LOGGING FILES
-    log_path = pathlib.Path("logs")
+    log_path = Path("logs")
     log_path.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_path)
 
@@ -242,7 +240,9 @@ def main():
     target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
-    save_img(target_emoji[0], save_dir=f"./data/Target_{emoji}.png", mode="normal")
+
+    save_path = Path(f"data/Target_{emoji}.png")
+    save_img(target_emoji[0], save_dir=save_path, mode="normal")
 
     # START GRID
     start_grid = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
@@ -252,11 +252,9 @@ def main():
     pool_grid = start_grid.clone().repeat(POOL_SIZE, 1, 1, 1)
 
     # initialize model, optimizer, and loss function
-    model = CANN(n_channels=N_CHANNELS, cell_survival_rate=CELL_SURVIVAL_RATE).to(
-        device
-    )
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    model = CANN(n_channels=N_CHANNELS, cell_survival_rate=CELL_SURVIVAL_RATE).to(device)
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     best_loss = 1
 
     def get_loss(X, target_emoji):
