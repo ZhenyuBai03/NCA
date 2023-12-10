@@ -16,6 +16,8 @@ $ python3 main.py --emoji [str] --to_data_path [bool]
 * The pool_img shows the whole pool training result of each epoch.
 > Before the Training, the target image will also be saved to data/target_img.
 
+> Tensorboard will be opened automatically from the terminal if using MacOS
+
  
 **Example:**
 ```bash
