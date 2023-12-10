@@ -250,6 +250,8 @@ def main():
     target_emoji = target_emoji_unpadded.to(device)
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
+    target_dir = Path("data/target_img")
+    target_dir.mkdir(parents=True, exist_ok=True)
     save_path = Path(f"data/target_img/target_{emoji_code}.png")
     save_img(target_emoji[0], save_dir=save_path, mode="normal")
 
