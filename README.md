@@ -35,6 +35,7 @@ $ python3 test.py --weight_file [str] --pool [bool] --speed [str]
     * "😢": "./data/weights/CA_Model_TEAR.pt"
     * "🙋": "./data/weights/CA_Model_Hi.pt"
     * "😘": "./data/weights/CA_Model_KISS.pt"
+ 
 **Example:**
 ```bash
 $ python3 test.py --weight_file CA_Model_Hi.pt --pool False --speed 5.0
