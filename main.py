@@ -2,6 +2,13 @@ import io
 import requests
 from pathlib import Path
 import argparse
+import os
+import shutil
+
+
+from subprocess import Popen, run
+import platform
+import signal
 
 import numpy as np
 
@@ -123,7 +130,7 @@ def load_emoji(emoji, size=40):
         % code
     )
     r = requests.get(url)
-    return load_image(io.BytesIO(r.content), max_size=size)
+    return load_image(io.BytesIO(r.content), max_size=size), code
 
 
 def load_image(path: io.BytesIO, max_size=40) -> torch.Tensor:
@@ -150,11 +157,11 @@ def to_rgb(img_rgba):
 
 def make_gif(images, img_name):
     print(f"Making {img_name} gif...")
-    gif_dir = Path(f"data/{img_name}.gif")
+    gif_dir = Path(f"SAMPLE/{img_name}.gif")
     images[0].save(
         gif_dir, save_all=True, append_images=images[1:], duration=100, loop=0
     )
-    print("Saved gif to data/test.gif")
+    print(f"Saved gif to {str(gif_dir)}")
 
 
 def save_img(X, save_dir, mode="normal"):
@@ -176,7 +183,7 @@ def save_img(X, save_dir, mode="normal"):
 ######################################################
 # TEST LOOP
 #
-def test_loop(model: CANN, emoji, N_CHANNELS=16, epochs=8000, visualize_pool=True):
+def test_loop(model: CANN, emoji_name, speed=1.0, N_CHANNELS=16, epochs=8000, visualize_pool=True):
     pool_images = []
     if visualize_pool:
         pool_dir = Path("data/train/")
@@ -185,24 +192,30 @@ def test_loop(model: CANN, emoji, N_CHANNELS=16, epochs=8000, visualize_pool=Tru
 
         print("Loading pool images...")
         for count, filepath in enumerate(filepathes):
-            if count % 50 == 0:
+            if count % 50 == 0 and count<2000:
                 img = Image.open(filepath)
                 img_tensor = transforms.ToTensor()(img)
                 pool_images.append(transforms.ToPILImage()(img_tensor))
                 img.close()
-        make_gif(pool_images, "pool"+emoji)
+        make_gif(pool_images, "pool"+emoji_name)
 
     emoji_images = []
     with torch.no_grad():
         X = init_grid(size=EMOJI_SIZE, n_channels=N_CHANNELS).to(device)
         print("\n\nTesting...")
+        img_step = 1 / speed
         for epoch in range(epochs):
             print(f"Epoch {epoch:10}/{epochs}", end="\r")
             X = model(X)
             rgb_X = to_rgb(X[0])
-            emoji_images.append(transforms.ToPILImage()(rgb_X))
+            if speed > 1 and epoch % speed == 0:
+                emoji_images.append(transforms.ToPILImage()(rgb_X))
+
+            else:
+                for _ in range(int(img_step)):
+                    emoji_images.append(transforms.ToPILImage()(rgb_X))
         print("\n\n")
-    make_gif(emoji_images,emoji)
+    make_gif(emoji_images,emoji_name)
 
 ######################################################
 # MAIN LOOP
@@ -221,27 +234,23 @@ def main():
             "-d",
             "--to_data_path",
             type=bool,
-            default=True,
+            default=False,
             help="whether to generate intermidiate images in /data",
     )
+
     # set device
     args = parser.parse_args()
     print(vars(args))
     emoji = args.emoji
 
-    # LOGGING FILES
-    log_path = Path("logs")
-    log_path.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_path)
-
     # TARGET EMOJI
     # add in padding to prevent weird edges with edges of emoji
-    target_emoji_unpadded = load_emoji(emoji, size=EMOJI_SIZE)
+    target_emoji_unpadded, emoji_code = load_emoji(emoji, size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
-    save_path = Path(f"data/Target_{emoji}.png")
+    save_path = Path(f"data/target_img/target_{emoji_code}.png")
     save_img(target_emoji[0], save_dir=save_path, mode="normal")
 
     # START GRID
@@ -259,54 +268,110 @@ def main():
 
     def get_loss(X, target_emoji):
         return ((target_emoji - X[:, :4, ...]) ** 2).mean(dim=[1, 2, 3])
+    
+    if args.to_data_path:
+        batch_dir = Path("data/train/batch_img")
+        pool_dir = Path("data/train/pool_img")
+        shutil.rmtree(batch_dir)
+        shutil.rmtree(pool_dir)
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        pool_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(NUM_EPOCHS):
-        batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
-        X = pool_grid[batch_ids]
-        loss_rank = get_loss(X, target_emoji).cpu().numpy().argsort()[::-1]
-        batch_ids = np.array(batch_ids)[loss_rank]
-        X = pool_grid[batch_ids]
+    # open tensorboard automatically only on mac
+    pwd = Path().resolve()
+    macos_tb = None
+    if platform.system() == "Darwin":
+        run(["rm", "-r", "logs/"])
+        macos_tb = Popen(
+            [
+                "/usr/bin/osascript",
+                "-e",
+                f'tell app "Terminal" to do script "cd {pwd} &&  python3 -m tensorboard.main --logdir=logs"',
+            ]
+        )
+    # LOGGING FILES for tensorboard
+    log_path = Path("logs")
+    log_path.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_path)
 
-        X[0] = start_grid
-        X0 = X.clone()
 
-        for _ in range(NUM_STEPS()):
-            X = model(X)
+    try:
+        for epoch in range(NUM_EPOCHS):
+            # select random batch from the pool and sort by loss
+            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
+            X = pool_grid[batch_ids]
+            loss_rank = get_loss(X, target_emoji).cpu().numpy().argsort()[::-1]
+            batch_ids = np.array(batch_ids)[loss_rank]
+            X = pool_grid[batch_ids]
 
-        loss = get_loss(X, target_emoji).mean()
+            # replace the highest loss with the init grid
+            X[0] = start_grid
+            X0 = X.clone()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            for _ in range(NUM_STEPS()):
+                X = model(X)
 
-        writer.add_scalar("train/loss", loss, epoch)
+            loss = get_loss(X, target_emoji).mean()
 
-        if loss < best_loss:
-            best_loss = loss
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
-        if epoch == 1000:
-            for g in optimizer.param_groups:
-                g["lr"] = LEARNING_RATE_TWO
-            print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_TWO})")
-        if epoch == 3000:
-            for g in optimizer.param_groups:
-                g["lr"] = LEARNING_RATE_THREE
-            print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
+            writer.add_scalar("train/loss", loss, epoch)
 
-        # update pool
-        pool_grid[batch_ids] = X.detach()
-        if epoch % 100 == 0 and args.to_data_path:
-            batch_grid = torch.cat([X0, X], dim=0).detach()
-            save_img(batch_grid, save_dir="data/train/Batch_Image_{:04d}.png".format(epoch), mode="batch")
-            save_img(pool_grid, save_dir="data/train/Pool_Image_{:04d}.png".format(epoch), mode="pool")
+            if loss < best_loss:
+                best_loss = loss
 
-    # save model
-    writer.close()
-    weight_path = f"data/CA_Model_{args.emoji}.pt"
-    torch.save(model.state_dict(), weight_path)
-    print("\nSaved model to\n\n", weight_path)
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("TARGET EMOJI CODE:", emoji_code)
+            print(f"EPOCH {epoch}\n- Loss:      {loss}\n- Best Loss: {best_loss}\n")
+            if epoch == 1000:
+                for g in optimizer.param_groups:
+                    g["lr"] = LEARNING_RATE_TWO
+                print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_TWO})")
+            if epoch == 3000:
+                for g in optimizer.param_groups:
+                    g["lr"] = LEARNING_RATE_THREE
+                print(f"(LEARNING RATE CHANGED: {LEARNING_RATE_THREE})")
 
+            # update pool
+            pool_grid[batch_ids] = X.detach()
+            if epoch % 100 == 0 and args.to_data_path:
+                batch_grid = torch.cat([X0, X], dim=0).detach()
+                save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
+                save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
+
+            # open tensorboard automatically only on mac
+            if epoch == 100 and macos_tb is not None:
+                run(
+                    [
+                        "open",
+                        "-a",
+                        "Safari",
+                        "http://localhost:6006/?darkMode=true#timeseries",
+                    ]
+                )
+
+
+    except KeyboardInterrupt:
+        print("\nTraining stopped by user")
+
+    finally:
+        writer.close()
+        if macos_tb is not None:
+            terminate = input("Terminate Tensorboard? (y/n): ")
+            if terminate.lower() == "y":
+                Popen(
+                    [
+                        "/usr/bin/osascript",
+                        "-e",
+                        'tell app "Terminal" to quit'
+                    ]
+                )
+        # save model
+        weight_path = f"data/weights/CA_Model_{emoji_code}.pt"
+        torch.save(model.state_dict(), weight_path)
+        print("\nSaved model to\n\n", weight_path)
 
 if __name__ == "__main__":
     main()
