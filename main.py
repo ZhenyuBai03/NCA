@@ -303,11 +303,15 @@ def main():
         for epoch in range(NUM_EPOCHS):
             # Calculate loss of all
             pool_loss = get_loss(pool_grid, target_emoji_pool).cpu().numpy()
+            # Turn into probability distribution
             pool_loss = pool_loss/np.sum(pool_loss)
-            print(pool_loss)
-            # randomly sample for amount of batch size by assigned weights
+            # randomly sample for amount of batch size by their loss probabilities
             batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=pool_loss).tolist()
-            
+            # Log to csv, rounded to 7 decimals (unreadable otherwise)
+            # Small issue: values for epoch 0 are saved to 0000.csv AND 0001.csv, values for epoch 1 are in 0002.csv, 
+            # values for epoch 2 in 0003.csv, etc.
+            np.savetxt("data/train/pool_loss/{:04d}.csv".format(epoch), pool_loss, fmt='%.7f', delimiter = ";")
+
             # select random batch from the pool and sort by loss
             # batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
             X = pool_grid[batch_ids]
@@ -351,6 +355,7 @@ def main():
                 batch_grid = torch.cat([X0, X], dim=0).detach()
                 save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
                 save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
+                # np.savetxt("data/train/pool_loss/{:04d}.csv".format(epoch), pool_loss, fmt='%.7f', delimiter = ";")
 
             # open tensorboard automatically only on mac
             if epoch == 100 and macos_tb is not None:
