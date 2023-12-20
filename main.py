@@ -308,7 +308,6 @@ def main():
             
             # randomly sample for amount of batch size by assigned weights
             batch_ids = torch.multinomial(probs, BATCH_SIZE, replacement=True).tolist()
-            print(batch_ids)
             
             # select random batch from the pool and sort by loss
             # batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
@@ -353,6 +352,7 @@ def main():
                 batch_grid = torch.cat([X0, X], dim=0).detach()
                 save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
                 save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
+                # np.savetxt("data/train/pool_loss/{:04d}.csv".format(epoch), pool_loss, fmt='%.7f', delimiter = ";")
 
             # open tensorboard automatically only on mac
             if epoch == 100 and macos_tb is not None:
