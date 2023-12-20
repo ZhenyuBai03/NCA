@@ -248,6 +248,7 @@ def main():
     target_emoji_unpadded, emoji_code = load_emoji(emoji, size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
+
     # experiment 1
     target_emoji_pool = target_emoji.repeat(POOL_SIZE, 1, 1, 1)
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
@@ -303,10 +304,11 @@ def main():
         for epoch in range(NUM_EPOCHS):
             # Calculate loss of all
             pool_loss = get_loss(pool_grid, target_emoji_pool).cpu().numpy()
-            pool_loss = pool_loss/np.sum(pool_loss)
-            print(pool_loss)
+            probs = F.softmax(pool_loss, dim=-1) 
+            
             # randomly sample for amount of batch size by assigned weights
-            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=pool_loss).tolist()
+            batch_ids = torch.multinomial(probs, BATCH_SIZE, replacement=True).tolist()
+            print(batch_ids)
             
             # select random batch from the pool and sort by loss
             # batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
