@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import os
 import shutil
+import time
 
 
 from subprocess import Popen, run
@@ -38,6 +39,7 @@ POOL_SIZE = 1024
 N_CHANNELS = 16
 CELL_SURVIVAL_RATE = 0.5
 EMOJI_SIZE = 40
+TEMPERATURE = 1
 
 # DEVICE MAKER
 def get_device():
@@ -300,20 +302,27 @@ def main():
 
 
     try:
+        total_exec_time = 0
         for epoch in range(NUM_EPOCHS):
-            # Calculate loss of all
-            pool_loss = get_loss(pool_grid, target_emoji_pool).cpu().numpy()
-            # Turn into probability distribution
-            pool_loss = pool_loss/np.sum(pool_loss)
-            # randomly sample for amount of batch size by their loss probabilities
-            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=pool_loss).tolist()
+            # show execution time of each epoch, check this to see if there is a problem with your pc
+            # or if code is running slowly for whatever reason (eg. forgot to plug in craptop)
+            if epoch != 0: 
+                print("Previous epoch time: ", time.time() - start_time)
+            start_time = time.time()
+
+            # Get loss of all, multiply by -1 so lowest loss gets highest probability, divide by temperature, softmax
+            sampling_probs = ((-1 * get_loss(pool_grid, target_emoji_pool)) / TEMPERATURE).cpu().softmax(dim=0).numpy()
+
+            # sample a batch according to their probabilities
+            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=sampling_probs).tolist()
             # Log to csv, rounded to 7 decimals (unreadable otherwise)
             # Small issue: values for epoch 0 are saved to 0000.csv AND 0001.csv, values for epoch 1 are in 0002.csv, 
             # values for epoch 2 in 0003.csv, etc.
-            np.savetxt("data/train/pool_loss/{:04d}.csv".format(epoch), pool_loss, fmt='%.7f', delimiter = ";")
+            np.savetxt("data/train/pool_probs/{:04d}.csv".format(epoch), sampling_probs, fmt='%.7f', delimiter = ";")
+            #if epoch != 0:
+                #np.savetxt("data/train/execution_time/{:04d}.txt".format(epoch), execution_time, fmt='%.7f')
 
-            # select random batch from the pool and sort by loss
-            # batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
+            # sort batch by loss
             X = pool_grid[batch_ids]
             loss_rank = get_loss(X, target_emoji).cpu().numpy().argsort()[::-1]
             batch_ids = np.array(batch_ids)[loss_rank]
@@ -355,7 +364,9 @@ def main():
                 batch_grid = torch.cat([X0, X], dim=0).detach()
                 save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
                 save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
-                # np.savetxt("data/train/pool_loss/{:04d}.csv".format(epoch), pool_loss, fmt='%.7f', delimiter = ";")
+                np.savetxt("data/train/pool_probs/{:04d}.csv".format(epoch), sampling_probs, fmt='%.7f', delimiter = ";")
+                np.savetxt("data/train/avg_exec_time/{:04d}.csv".format(epoch), total_exec_time/100, fmt='%.7f', delimiter = ";")
+                total_exec_time = 0
 
             # open tensorboard automatically only on mac
             if epoch == 100 and macos_tb is not None:
@@ -367,6 +378,8 @@ def main():
                         "http://localhost:6006/?darkMode=true#timeseries",
                     ]
                 )
+                            
+            total_exec_time += time.time() - start_time
 
 
     except KeyboardInterrupt:
