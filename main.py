@@ -278,10 +278,13 @@ def main():
     if args.to_data_path:
         batch_dir = Path("data/train/batch_img")
         pool_dir = Path("data/train/pool_img")
+        probs_dir = Path("data/train/pool_probs")
         shutil.rmtree(batch_dir)
         shutil.rmtree(pool_dir)
+        shutil.rmtree(probs_dir)
         batch_dir.mkdir(parents=True, exist_ok=True)
         pool_dir.mkdir(parents=True, exist_ok=True)
+        probs_dir.mkdir(parents=True, exist_ok=True)
 
     # open tensorboard automatically only on mac
     pwd = Path().resolve()
@@ -302,6 +305,7 @@ def main():
 
 
     try:
+        avg_exec_times = torch.zeros(((NUM_EPOCHS//100)-1, 2), dtype=torch.float32)
         total_exec_time = 0
         for epoch in range(NUM_EPOCHS):
             # show execution time of each epoch, check this to see if there is a problem with your pc
@@ -315,12 +319,6 @@ def main():
 
             # sample a batch according to their probabilities
             batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=sampling_probs).tolist()
-            # Log to csv, rounded to 7 decimals (unreadable otherwise)
-            # Small issue: values for epoch 0 are saved to 0000.csv AND 0001.csv, values for epoch 1 are in 0002.csv, 
-            # values for epoch 2 in 0003.csv, etc.
-            np.savetxt("data/train/pool_probs/{:04d}.csv".format(epoch), sampling_probs, fmt='%.7f', delimiter = ";")
-            #if epoch != 0:
-                #np.savetxt("data/train/execution_time/{:04d}.txt".format(epoch), execution_time, fmt='%.7f')
 
             # sort batch by loss
             X = pool_grid[batch_ids]
@@ -364,8 +362,11 @@ def main():
                 batch_grid = torch.cat([X0, X], dim=0).detach()
                 save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
                 save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
+                # rounded to 7 decimals, unreadable otherwise
                 np.savetxt("data/train/pool_probs/{:04d}.csv".format(epoch), sampling_probs, fmt='%.7f', delimiter = ";")
-                np.savetxt("data/train/avg_exec_time/{:04d}.csv".format(epoch), total_exec_time/100, fmt='%.7f', delimiter = ";")
+                avg_exec_times[(epoch//100)-1, 0] = epoch
+                avg_exec_times[(epoch//100)-1, 1] = total_exec_time/100
+                np.savetxt("data/train/avg_exec_times.csv", avg_exec_times, fmt='%.7f', delimiter = ";")
                 total_exec_time = 0
 
             # open tensorboard automatically only on mac
@@ -380,6 +381,9 @@ def main():
                 )
                             
             total_exec_time += time.time() - start_time
+
+        if args.to_data_path:
+            np.savetxt("data/train/avg_exec_times.csv", avg_exec_times, fmt='%.7f', delimiter = ";")
 
 
     except KeyboardInterrupt:
