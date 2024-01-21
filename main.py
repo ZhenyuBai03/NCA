@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import os
 import shutil
+import time
 
 
 from subprocess import Popen, run
@@ -38,6 +39,7 @@ POOL_SIZE = 1024
 N_CHANNELS = 16
 CELL_SURVIVAL_RATE = 0.5
 EMOJI_SIZE = 40
+TEMPERATURE = 1
 
 # DEVICE MAKER
 def get_device():
@@ -248,6 +250,8 @@ def main():
     target_emoji_unpadded, emoji_code = load_emoji(emoji, size=EMOJI_SIZE)
     target_emoji_unpadded = F.pad(target_emoji_unpadded, [PAD_SIZE]*4, "constant", 0)
     target_emoji = target_emoji_unpadded.to(device)
+    # experiment 1
+    target_emoji_pool = target_emoji.repeat(POOL_SIZE, 1, 1, 1)
     target_emoji = target_emoji.repeat(BATCH_SIZE, 1, 1, 1)
 
     target_dir = Path("data/target_img")
@@ -274,10 +278,13 @@ def main():
     if args.to_data_path:
         batch_dir = Path("data/train/batch_img")
         pool_dir = Path("data/train/pool_img")
+        probs_dir = Path("data/train/pool_probs")
         shutil.rmtree(batch_dir)
         shutil.rmtree(pool_dir)
+        shutil.rmtree(probs_dir)
         batch_dir.mkdir(parents=True, exist_ok=True)
         pool_dir.mkdir(parents=True, exist_ok=True)
+        probs_dir.mkdir(parents=True, exist_ok=True)
 
     # open tensorboard automatically only on mac
     pwd = Path().resolve()
@@ -298,9 +305,22 @@ def main():
 
 
     try:
+        avg_exec_times = torch.zeros(((NUM_EPOCHS//100)-1, 2), dtype=torch.float32)
+        total_exec_time = 0
         for epoch in range(NUM_EPOCHS):
-            # select random batch from the pool and sort by loss
-            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False).tolist()
+            # show execution time of each epoch, check this to see if there is a problem with your pc
+            # or if code is running slowly for whatever reason (eg. forgot to plug in craptop)
+            if epoch != 0: 
+                print("Previous epoch time: ", time.time() - start_time)
+            start_time = time.time()
+
+            # Get loss of all, multiply by -1 so lowest loss gets highest probability, divide by temperature, softmax
+            sampling_probs = ((-1 * get_loss(pool_grid, target_emoji_pool)) / TEMPERATURE).cpu().softmax(dim=0).numpy()
+
+            # sample a batch according to their probabilities
+            batch_ids = np.random.choice(POOL_SIZE, BATCH_SIZE, replace=False, p=sampling_probs).tolist()
+
+            # sort batch by loss
             X = pool_grid[batch_ids]
             loss_rank = get_loss(X, target_emoji).cpu().numpy().argsort()[::-1]
             batch_ids = np.array(batch_ids)[loss_rank]
@@ -342,6 +362,12 @@ def main():
                 batch_grid = torch.cat([X0, X], dim=0).detach()
                 save_img(batch_grid, save_dir="data/train/batch_img/{:04d}.png".format(epoch), mode="batch")
                 save_img(pool_grid, save_dir="data/train/pool_img/{:04d}.png".format(epoch), mode="pool")
+                # rounded to 7 decimals, unreadable otherwise
+                np.savetxt("data/train/pool_probs/{:04d}.csv".format(epoch), sampling_probs, fmt='%.7f', delimiter = ";")
+                avg_exec_times[(epoch//100)-1, 0] = epoch
+                avg_exec_times[(epoch//100)-1, 1] = total_exec_time/100
+                np.savetxt("data/train/avg_exec_times.csv", avg_exec_times, fmt='%.7f', delimiter = ";")
+                total_exec_time = 0
 
             # open tensorboard automatically only on mac
             if epoch == 100 and macos_tb is not None:
@@ -353,6 +379,11 @@ def main():
                         "http://localhost:6006/?darkMode=true#timeseries",
                     ]
                 )
+                            
+            total_exec_time += time.time() - start_time
+
+        if args.to_data_path:
+            np.savetxt("data/train/avg_exec_times.csv", avg_exec_times, fmt='%.7f', delimiter = ";")
 
 
     except KeyboardInterrupt:
